@@ -28,7 +28,7 @@ class Square < Point
 	end
 end
 
-class Rune < Point
+class RuneSquare < Point
 	def initialize(x, y, world)
 		super(x, y, world)
 		@rune = :none
@@ -65,6 +65,10 @@ class GridManager
 	def in_bounds(point)
 		(point.x >= 0) and (point.y >= 0) and
 				(point.x < @x) and (point.y < @y)
+	end
+
+	def at(point)
+		@grid[point.y][point.x]
 	end
 end
 
@@ -220,7 +224,7 @@ class Mob < Entity
 			@genome = Array.new(5) { MOB_GENES.random }
 		end
 
-		@gm = GridManager.new(10, 10, Rune)
+		@gm = GridManager.new(10, 10, RuneSquare)
 		run_genes
 		calc_power
 	end
@@ -265,11 +269,11 @@ class Mob < Entity
 					cursor = right
 				end
 			when :red
-				cursor.rune = :red
+				@gm.at(cursor).rune = :red
 			when :black
-				cursor.rune = :black
+				@gm.at(cursor).rune = :black
 			when :blue
-				cursor.rune = :blue
+				@gm.at(cursor).rune = :blue
 			end
 
 		end
@@ -278,7 +282,13 @@ class Mob < Entity
 	def calc_power
 		@gm.grid.each do |row|
 			row.each do |point|
-				same_rune_adjacents = 
+				same_rune_adjacents = @gm.possible_adjacent(point).delete_if {|adj| adj.rune != point.rune}
+				if same_rune_adjacents.length <= 2
+					power = same_rune_adjacents.length + 1
+				else
+					power = 0
+				end
+				@rune_power[point.rune] += power
 			end
 		end
 	end
