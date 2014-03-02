@@ -76,6 +76,8 @@ class GridManager
 end
 
 class GameManager < GridManager
+	attr_accessor :plants, :mobs
+
 	def initialize(x, y)
 		super(x, y, Square)
 		@world = @grid
@@ -115,35 +117,48 @@ class GameManager < GridManager
 			end
 			puts "|"
 		end
+		puts "-"*@x
 	end
 
 	def step
+		step_plants
+		step_mobs
+	end
+
+	def step_plants
 		# plants gather energy and spread if possible
 		@plants.each do |plant|
 			plant.photosynth
 			plant.spread
 		end
+		nil
+	end
 
+	def step_mobs
 		# mobs now move to new places
 		@mobs.each do |mob|
 			mob.move_random
+			mob.tire
 		end
 
 		# now battle and search for resources
 		# and reproduce
 		@mobs.each do |mob|
-			if mob.alive and mob.point.entities.length > 1
 				# need to find an opponent
-				opponent = mob.point.entities.find {|m| m != mob and m.alive}
-				battle(mob, opponent)
-				mob.reset_mana
-			end
+				other_mobs = mob.point.entities.find_all{|e|e.type == :mob and e != mob and e.alive}
+				if other_mobs.length >= 1
+					opponent = other_mobs.random
+					battle(mob, opponent)
+				end
+			
 
-			# gather
+			# gather and recuperate
 			if mob.alive
-
+				mob.heal
+				mob.regen_mana(1)
 			end
 		end
+		nil
 	end
 
 	def battle(mob1, mob2)
@@ -155,18 +170,24 @@ class GameManager < GridManager
 			second = mob1
 		end
 
+		i = 1
 		while (first.alive and second.alive)
+			puts "Turn 1"
+			first.display_stats
+			second.display_stats
+
 			first.attack(second)
 			if second.alive
 				second.attack(first)
 			end
+			sleep 1
 		end
 	end
 end
 
 
 class Entity
-	attr_accessor :can_fight, :alive, :display_priority
+	attr_accessor :can_fight, :alive, :display_priority, :point, :type
 	def initialize(world, point)
 		@world = world
 		@point = point
@@ -175,10 +196,17 @@ class Entity
 		@can_fight = false
 		@alive = true
 		@resources = 0
+		@type = :none
 	end
 
 	def display
 		@name_list[@name_id]
+	end
+
+	def display_stats
+		puts "(#{@point.x}, #{@point.y}) #{display}"
+		puts "Resources: #{@resources}"
+		nil
 	end
 end
 
@@ -186,11 +214,14 @@ class Plant < Entity
 	attr_accessor :resources
 	PLANT_NAMES = ("a".."z").to_a
 
-	def initialize(world, point)
+	def initialize(world, point, parent_id=nil)
 		@name_list = PLANT_NAMES
 		super(world, point)
-
-		@display_priority = 0
+		@type = :plant
+		if parent_id
+			@name_id = parent_id
+		end
+		@display_priority = 2
 	end
 
 	def photosynth
@@ -198,11 +229,12 @@ class Plant < Entity
 	end
 
 	def spread
-		if @resources >= 10
-			most_sparse_adjacent = @world.possible_adjacent(@point).sort_by {|square| square.plants.length}.first
-			if most_sparse_adjacent < 5
-				most_sparse_adjacent.plants.push Plant.new(@world, most_sparse_adjacent)
-				@resources -= 10
+		if @resources >= 5
+			sparse_adjacents = @world.possible_adjacent(@point).find_all {|square| square.entities.find_all{|e|e.type == :plant}.length < 5}
+			if sparse_adjacents.length > 0
+				square = sparse_adjacents.random
+				square.entities.push Plant.new(@world, square)
+				@resources -= 5
 			end
 		end
 	end
@@ -216,12 +248,16 @@ class Mob < Entity
 	def initialize(world, point, parent=nil)
 		@name_list = MOB_NAMES
 		super(world, point)
+		@type = :mob
+		@display_priority = 1
+		@can_fight = true
+
 		@health = 10
 		@max_health = 10
 		@mana = 0
 		@max_mana = 10
-		@display_priority = 1
-		@can_fight = true
+		@resources = 100
+		
 		if parent
 			mutate(parent.gene)
 		else
@@ -243,6 +279,17 @@ class Mob < Entity
 		@point.entities.delete(self)
 		point.entities.push(self)
 		@point = point
+	end
+
+	def tire
+		unless use_resources(1)
+			die
+		end
+	end
+
+	def die
+		@alive = false
+		@point.entities.delete(self)
 	end
 
 	def mutate(parent_genome)
@@ -288,6 +335,7 @@ class Mob < Entity
 	end
 
 	def calc_power
+		# determine powers based on the grid
 		@gm.grid.each do |row|
 			row.each do |point|
 				same_rune_adjacents = @gm.possible_adjacent(point).delete_if {|adj| adj.rune != point.rune}
@@ -304,9 +352,10 @@ class Mob < Entity
 			end
 		end
 
+		# apply power to stats
 		increase_health(@rune_power[:black]||0)
 		increase_mana(@rune_power[:blue]||0)
-		@attack_power = @rune_power[:red]||0
+		@attack_power = @rune_power[:red]||1
 		@healing_power = @rune_power[:green]||0
 		if @attack_power > 0
 			@abilities.push :attack
@@ -327,11 +376,34 @@ class Mob < Entity
 		@max_mana += amount
 	end
 
+	def heal
+		@health += @healing_power/2
+		if @health > @max_health
+			@health = @max_health
+		end
+	end
+
+	def regen_mana(amount)
+		@mana += amount
+		if @mana > @max_mana
+			@mana = @max_mana
+		end
+	end
+
 	def use_mana(amount)
 		if @mana - amount < 0
 			return false
 		else
 			@mana -= amount
+			return true
+		end
+	end
+
+	def use_resources(amount)
+		if @resources - amount < 0
+			return false
+		else
+			@resources -= amount
 			return true
 		end
 	end
@@ -348,8 +420,7 @@ class Mob < Entity
 
 	def take_damage(amount)
 		if amount > @health
-			@alive = false
-			@point.entities.delete(self)
+			die
 			return @health
 		else
 			@health -= amount
@@ -358,33 +429,60 @@ class Mob < Entity
 	end
 
 	def attack(other_mob)
-		case @abilities[@current_ability_id]
-		when :attack
-			other_mob.take_damage(@attack_power)
-		when :heal
-			if use_mana(2)
-				@health += @healing_power/2
-				if @health > @max_health
-					@health = @max_health
-				end
-			else
-				# default to attacking when no mana
+		if @abilities.length > 0
+			case @abilities[@current_ability_id]
+			when :attack
 				other_mob.take_damage(@attack_power)
+			when :heal
+				if use_mana(2)
+					# if successful using mana, then heal
+					heal
+				else
+					# default to attacking when no mana
+					other_mob.take_damage(@attack_power)
+				end
 			end
+			# switch to the next ability
+			@current_ability_id = (@current_ability_id + 1) % @abilities.length
 		end
-
-		@current_ability_id = (@current_ability_id + 1) % @abilities.length
 	end
 
 	def display_stats
-
+		super
+		puts "#{@health}/#{@max_health} health, #{@mana}/#{@max_mana} mana; #{@alive ? 'alive' : 'dead'}"
 	end
 end
 
 def test_gm
-	gm = GameManager.new(40, 20)
+	gm = GameManager.new(60, 20)
 	gm.populate_mobs(10)
-	gm.populate_plants(30)
+	gm.populate_plants(100)
 	gm.display
+	gm
+end
+
+# test plant growth
+def test_pg(n=100)
+	gm = test_gm
+	n.times do
+		system 'clear'
+		gm.step_plants
+		gm.display
+		sleep 0.1
+	end
+	gm
+end
+
+
+# test mob movement
+def test_mm(n=100)
+	gm = test_gm
+	n.times do |i|
+		gm.step_mobs
+		system 'clear'
+		puts "(#{i})"
+		gm.display
+		sleep 0.5
+	end
 	gm
 end
