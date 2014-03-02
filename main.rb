@@ -20,17 +20,18 @@ end
 class Square < Point
 	attr_accessor :entities
 
-	def initialize(x, y, world, entities=[])
+	def initialize(x, y)
 		super(x, y)
-		@world = world
-		@entities = entities
+		@entities = []
 		@resources = []
 	end
 end
 
 class RuneSquare < Point
-	def initialize(x, y, world)
-		super(x, y, world)
+	attr_accessor :rune
+
+	def initialize(x, y)
+		super(x, y)
 		@rune = :none
 	end
 end
@@ -40,6 +41,8 @@ def p(x, y)
 end
 
 class GridManager
+	attr_accessor :grid
+
 	ADJACENTS = [p(-1, -1), p(-1, 0), p(0, -1),
 					p(1, 1), p(1, 0), p(0, 1),
 					p(-1, 1), p(1, -1)]
@@ -47,7 +50,7 @@ class GridManager
 	def initialize(x, y, default_square)
 		@x = x
 		@y = y
-		@grid = Array.new(y) { |y_| Array.new(x) {|x_| default_square.new(x_, y_, self)} }
+		@grid = Array.new(y) { |y_| Array.new(x) {|x_| default_square.new(x_, y_)} }
 	end
 
 	def possible_adjacent(point)
@@ -56,7 +59,7 @@ class GridManager
 			new_point = point + adj
 
 			if in_bounds(new_point)
-				return_adjacents.push new_point
+				return_adjacents.push(at(new_point))
 			end
 		end
 		return return_adjacents
@@ -114,8 +117,6 @@ class GameManager < GridManager
 		end
 	end
 
-
-
 	def step
 		# plants gather energy and spread if possible
 		@plants.each do |plant|
@@ -135,6 +136,7 @@ class GameManager < GridManager
 				# need to find an opponent
 				opponent = mob.point.entities.find {|m| m != mob and m.alive}
 				battle(mob, opponent)
+				mob.reset_mana
 			end
 
 			# gather
@@ -207,15 +209,17 @@ class Plant < Entity
 end
 
 class Mob < Entity
-	attr_accessor :health, :max_health
+	attr_accessor :health, :max_health, :genome, :mana
 	MOB_NAMES = ("A".."Z").to_a
-	MOB_GENES = [:up, :down, :left, :right, :red, :black, :blue]
+	MOB_GENES = [:up, :down, :left, :right, :red, :black, :green, :blue]
 
 	def initialize(world, point, parent=nil)
 		@name_list = MOB_NAMES
 		super(world, point)
-		@health = 1000
-		@max_health = 1000
+		@health = 10
+		@max_health = 10
+		@mana = 0
+		@max_mana = 10
 		@display_priority = 1
 		@can_fight = true
 		if parent
@@ -223,8 +227,10 @@ class Mob < Entity
 		else
 			@genome = Array.new(5) { MOB_GENES.random }
 		end
-
+		@rune_power = {:black => 0, :blue => 0, :red => 0, :green => 0}
 		@gm = GridManager.new(10, 10, RuneSquare)
+		@abilities = []
+		@current_ability_id = 0
 		run_genes
 		calc_power
 	end
@@ -239,9 +245,9 @@ class Mob < Entity
 		@point = point
 	end
 
-	def mutate(parent_gene)
-		@gene = parent_gene.dup
-		@gene[rand(@gene.length)] = MOB_GENES.random
+	def mutate(parent_genome)
+		@genome = parent_genome.dup
+		@genome[rand(@genome.length)] = MOB_GENES.random
 	end
 
 	def run_genes
@@ -274,6 +280,8 @@ class Mob < Entity
 				@gm.at(cursor).rune = :black
 			when :blue
 				@gm.at(cursor).rune = :blue
+			when :green
+				@gm.at(cursor).rune = :green
 			end
 
 		end
@@ -288,8 +296,43 @@ class Mob < Entity
 				else
 					power = 0
 				end
-				@rune_power[point.rune] += power
+				if @rune_power[point.rune]
+					@rune_power[point.rune] += power
+				else
+					@rune_power[point.rune] = 0
+				end 
 			end
+		end
+
+		increase_health(@rune_power[:black]||0)
+		increase_mana(@rune_power[:blue]||0)
+		@attack_power = @rune_power[:red]||0
+		@healing_power = @rune_power[:green]||0
+		if @attack_power > 0
+			@abilities.push :attack
+		end
+
+		if (@healing_power > 0) and (@max_mana > 0)
+			@abilities.push :heal
+		end
+	end
+
+	def increase_health(amount)
+		@health += amount
+		@max_health += amount
+	end
+
+	def increase_mana(amount)
+		@mana += amount
+		@max_mana += amount
+	end
+
+	def use_mana(amount)
+		if @mana - amount < 0
+			return false
+		else
+			@mana -= amount
+			return true
 		end
 	end
 
@@ -297,7 +340,7 @@ class Mob < Entity
 		if @resources >= (@gene.length/5).round + 10
 			most_sparse_adjacent = @world.possible_adjacent(@point).sort_by {|square| square.mobs.length}.first
 			if most_sparse_adjacent < 5
-				most_sparse_adjacent.plants.push Mob.new(@world, most_sparse_adjacent)
+				most_sparse_adjacent.plants.push Mob.new(@world, most_sparse_adjacent, self)
 				@resources -= (@gene.length/5).round + 10
 			end
 		end
@@ -306,6 +349,7 @@ class Mob < Entity
 	def take_damage(amount)
 		if amount > @health
 			@alive = false
+			@point.entities.delete(self)
 			return @health
 		else
 			@health -= amount
@@ -313,13 +357,32 @@ class Mob < Entity
 		end
 	end
 
-	def attack
-		next_ability
+	def attack(other_mob)
+		case @abilities[@current_ability_id]
+		when :attack
+			other_mob.take_damage(@attack_power)
+		when :heal
+			if use_mana(2)
+				@health += @healing_power/2
+				if @health > @max_health
+					@health = @max_health
+				end
+			else
+				# default to attacking when no mana
+				other_mob.take_damage(@attack_power)
+			end
+		end
+
+		@current_ability_id = (@current_ability_id + 1) % @abilities.length
+	end
+
+	def display_stats
+
 	end
 end
 
 def test_gm
-	gm = GameManager.new(20, 20)
+	gm = GameManager.new(40, 20)
 	gm.populate_mobs(10)
 	gm.populate_plants(30)
 	gm.display
