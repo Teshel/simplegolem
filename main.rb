@@ -366,7 +366,7 @@ class Mob < Entity
 	end
 
 	def die
-		unless @alive
+		if @alive
 			@alive = false
 			@children.each do |child|
 				child.parent = nil
