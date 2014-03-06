@@ -1,3 +1,4 @@
+
 Config = {
 	:plant_spread_cost => 10,
 	:plant_age_max => 300,
@@ -7,7 +8,7 @@ Config = {
 	:mob_reproduce_age => 50,
 	:mob_age_max => 200,
 	:resource_max => 100,
-	:plant_density_max => 2
+	:plant_density_max => 1
 }
 
 class Array
@@ -105,6 +106,18 @@ class GameManager < GridManager
 		@plants = []
 	end
 
+	def run(n=100000)
+		n.times do |i|
+			step
+			system 'clear'
+			puts "(#{i})\t#{plants.length} plants\t#{mobs.length} mobs"
+			display
+			mobs.sort_by{|e| e.children.length}.reverse[0..0].each do |mob|
+				mob.display_stats
+			end
+		end
+	end
+
 	def populate_mobs(n=10)
 		n.times do
 			x = rand(@x)
@@ -173,7 +186,7 @@ class GameManager < GridManager
 		# and reproduce
 		@mobs.each do |mob|
 			# need to find an opponent
-			other_mobs = mob.point.entities.find_all{|e|e.type == :mob and e != mob and e.alive}
+			other_mobs = mob.point.entities.find_all{|e|e.type == :mob and e != mob and e != mob.parent and mob.children.include?(e) == false}
 			if other_mobs.length >= 1
 				opponent = other_mobs.random
 				battle(mob, opponent)
@@ -182,7 +195,7 @@ class GameManager < GridManager
 			# gather and recuperate
 			if mob.alive
 				local_plants = mob.point.entities.find_all{|e| e.type == :plant and e.alive}
-				# local_plants.each do |plant|
+				# local_plants.each do |plant|`
 				# 	mob.resources += plant.resources
 				# 	plant.die
 				# end
@@ -225,8 +238,10 @@ class GameManager < GridManager
 		end
 		if first.alive
 			first.add_resources(second.resources/2)
+			first.kills += 1
 		else
 			second.add_resources(first.resources/2)
+			second.kills += 1
 		end
 	end
 end
@@ -251,8 +266,7 @@ class Entity
 	end
 
 	def display_stats
-		puts "(#{@point.x}, #{@point.y}) #{display}"
-		puts "Resources: #{@resources}"
+		puts "(#{@point.x}, #{@point.y}) #{display} #{@resources} resources"
 		nil
 	end
 
@@ -302,7 +316,7 @@ class Plant < Entity
 end
 
 class Mob < Entity
-	attr_accessor :health, :max_health, :genome, :mana, :attack_power, :healing_power
+	attr_accessor :health, :max_health, :genome, :mana, :attack_power, :healing_power, :kills, :parent, :children
 	MOB_NAMES = ("A".."Z").to_a
 	MOB_GENES = [:up, :down, :left, :right, :red, :black, :green, :blue]
 
@@ -312,20 +326,23 @@ class Mob < Entity
 		@type = :mob
 		@display_priority = 1
 		@can_fight = true
+		@kills = 0
+		@parent = parent
 
 		@health = 10
 		@max_health = 10
 		@mana = 0
 		@max_mana = 0
 		@resources = Config[:mob_initial_resources]
+		@children = []
 		
 		if parent
 			mutate(parent.genome)
 		else
 			@genome = Array.new(5) { MOB_GENES.random }
 		end
-		@rune_power = {:black => 0, :blue => 0, :red => 0, :green => 0}
-		@gm = GridManager.new(40, 20, RuneSquare)
+		@rune_power = {:black => 0, :blue => 0, :red => 1, :green => 0}
+		@gm = GridManager.new(30, 10, RuneSquare)
 		@abilities = [:attack]
 		@current_ability_id = 0
 		run_genes
@@ -349,14 +366,21 @@ class Mob < Entity
 	end
 
 	def die
-		@alive = false
-		@world.mobs.delete(self)
-		@point.entities.delete(self)
+		unless @alive
+			@alive = false
+			@children.each do |child|
+				child.parent = nil
+			end
+			@children = nil
+			@parent = nil
+			@world.mobs.delete(self)
+			@point.entities.delete(self)
+		end
 	end
 
 	def mutate(parent_genome)
 		@genome = parent_genome.dup
-		case rand(3)
+		case rand(5)
 		when 0
 			@genome[rand(@genome.length)] = MOB_GENES.random
 		when 1
@@ -408,7 +432,8 @@ class Mob < Entity
 		@gm.grid.each do |row|
 			row.each do |point|
 				same_rune_adjacents = @gm.possible_adjacent(point).delete_if {|adj| adj.rune != point.rune}
-				if same_rune_adjacents.length <= 2
+				other_rune_adjacents = @gm.possible_adjacent(point).delete_if {|adj| adj.rune == point.rune}
+				if same_rune_adjacents.length <= 2 and other_rune_adjacents.length > 0
 					power = same_rune_adjacents.length + 1
 				else
 					power = 0
@@ -422,10 +447,10 @@ class Mob < Entity
 		end
 
 		# apply power to stats
-		increase_health(@rune_power[:black]||0)
-		increase_mana(@rune_power[:blue]||0)
-		@attack_power = @rune_power[:red]||1
-		@healing_power = @rune_power[:green]||0
+		increase_health(@rune_power[:black]*10)
+		increase_mana(@rune_power[:blue])
+		@attack_power = @rune_power[:red]
+		@healing_power = @rune_power[:green]*3
 
 		if @attack_power == 0
 			@attack_power = 1
@@ -478,14 +503,16 @@ class Mob < Entity
 	end
 
 	def reproduce
-		if (@age >= Config[:mob_reproduce_age]) and (@resources >= ((@genome.length/10).round + Config[:mob_reproduce_cost]) * 3)
+		if (@age >= Config[:mob_reproduce_age]) and (@resources >= ((@genome.length/2).round + Config[:mob_reproduce_cost] * 2))
 			empty_adjacents = @world.possible_adjacent(@point).find_all {|square| square.entities.find_all{|e|e.type == :mob}.length < 1}
 			if empty_adjacents.length > 0
 				square = empty_adjacents.random
 				child = Mob.new(@world, square, self)
+				@children.push child
 				square.entities.push child
 				@world.mobs.push child
-				@resources -= (@genome.length/5).round + Config[:mob_reproduce_cost]
+				@resources -= Config[:mob_reproduce_cost]
+				@resources -= (@genome.length/2).round + Config[:mob_reproduce_cost]
 			end
 		end
 	end
@@ -520,15 +547,25 @@ class Mob < Entity
 	def display_stats
 		super
 		puts "#{@health}/#{@max_health} health, #{@mana}/#{@max_mana} mana; #{@attack_power} attack power, #{@healing_power} healing power"
-		m = {:up => "U", :down => "D", :right => "R", :left => "L", :green => "G", :blue => "B", :red => "E", :black => "K"}
-		puts "Genome: " + @genome.map{|gene| m[gene]}.join
+		runes = {:green => "G", :blue => "B", :red => "E", :black => "K", :none => " "}
+		m = {:up => "U", :down => "D", :right => "R", :left => "L", :green => "G", :green => "G", :blue => "B", :red => "E", :black => "K"}
+		puts "Genome: " + @genome.map{|gene| m[gene]}.join + " Children: #{@children.length}"
+
+		puts("_"*@gm.width)
+		@gm.grid.each do |row|
+			row.each do |square|
+				print runes[square.rune]
+			end
+			puts "|"
+		end
+		puts("-"*@gm.width)
 	end
 end
 
 def test_gm
 	gm = GameManager.new(60, 20)
 	gm.populate_mobs(20)
-	gm.populate_plants(100)
+	gm.populate_plants(200)
 	gm.display
 	gm
 end
@@ -562,17 +599,8 @@ def test_mm(n=100)
 	gm
 end
 
-def test_all(n=1000)
+def test_all(n=100000)
 	gm = test_gm
-	n.times do |i|
-		gm.step
-		system 'clear'
-		puts "(#{i})\t#{gm.plants.length} plants\t#{gm.mobs.length} mobs"
-		gm.display
-		gm.mobs.sort_by{|e| e.attack_power}.reverse[0..4].each do |mob|
-			mob.display_stats
-		end
-		sleep 0.01
-	end
+	gm.run(n)
 	gm
 end
