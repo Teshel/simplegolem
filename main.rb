@@ -4,10 +4,10 @@ Config = {
 	:plant_age_max => 300,
 	:photosynth => 1,
 	:mob_reproduce_cost => 10,
-	:mob_initial_resources => 10,
-	:mob_reproduce_age => 50,
-	:mob_age_max => 200,
-	:resource_max => 100,
+	:mob_initial_resources => 100,
+	:mob_reproduce_age => 100,
+	:mob_age_max => 500,
+	:resource_max => 100000000,
 	:plant_density_max => 1
 }
 
@@ -112,7 +112,7 @@ class GameManager < GridManager
 			system 'clear'
 			puts "(#{i})\t#{plants.length} plants\t#{mobs.length} mobs"
 			display
-			mobs.sort_by{|e| e.children.length}.reverse[0..0].each do |mob|
+			mobs.sort_by{|e| e.max_health + e.attack_power + e.healing_power}.reverse[0..0].each do |mob|
 				mob.display_stats
 			end
 		end
@@ -182,14 +182,18 @@ class GameManager < GridManager
 			end
 		end
 
-		# now battle and search for resources
-		# and reproduce
+		# now battle or mate, and then search for resources
 		@mobs.each do |mob|
 			# need to find an opponent
 			other_mobs = mob.point.entities.find_all{|e|e.type == :mob and e != mob and e != mob.parent and mob.children.include?(e) == false}
 			if other_mobs.length >= 1
-				opponent = other_mobs.random
-				battle(mob, opponent)
+				other = other_mobs.random
+				personality_difference = (mob.personality - other.personality).abs
+				if rand(8) < personality_difference
+					battle(mob, other)
+				else
+					mate(mob, other)
+				end
 			end
 
 			# gather and recuperate
@@ -244,8 +248,31 @@ class GameManager < GridManager
 			second.kills += 1
 		end
 	end
-end
 
+	def mate(mob1, mob2)
+		# must be opposite sexes, and also must have enough resources
+		if (mob1.sex != mob2.sex) and (mob1.resources > 10) and (mob2.resources > 10)
+			# if mob1.sex == :woman
+			# 	woman = mob1
+			# 	man = mob2
+			# else
+			# 	man = mob1
+			# 	woman = mob2
+			# end
+			mob1_genome_length = mob1.genome.split(:grid).length
+			mob2_genome_length = mob2.genome.split(:grid).length
+			if (mob2_genome_length >= mob1_genome_length-1) and (mob2_genome_length < mob1_genome_length+1)
+				child = Mob.new(world, mob1.point, [mob1, mob2])
+				@mobs.push child
+				mob1.point.entities.push child
+
+				# deduct resources
+				mob1.resources -= 5
+				mob2.resources -= 5
+			end
+		end
+	end
+end
 
 class Entity
 	attr_accessor :can_fight, :alive, :display_priority, :point, :type, :resources, :age
@@ -316,18 +343,19 @@ class Plant < Entity
 end
 
 class Mob < Entity
-	attr_accessor :health, :max_health, :genome, :mana, :attack_power, :healing_power, :kills, :parent, :children
+	attr_accessor :health, :max_health, :genome, :mana, :attack_power, :healing_power, :kills, :parent, :children, :genome, :sex, :personality
 	MOB_NAMES = ("A".."Z").to_a
 	MOB_GENES = [:up, :down, :left, :right, :red, :black, :green, :blue]
 
-	def initialize(world, point, parent=nil)
+	def initialize(world, point, parents=[])
 		@name_list = MOB_NAMES
 		super(world, point)
 		@type = :mob
+		@sex = [:male, :female].random
+		@personality = rand(10)
 		@display_priority = 1
-		@can_fight = true
 		@kills = 0
-		@parent = parent
+		@parents = parents
 
 		@health = 10
 		@max_health = 10
@@ -336,13 +364,17 @@ class Mob < Entity
 		@resources = Config[:mob_initial_resources]
 		@children = []
 		
-		if parent
-			mutate(parent.genome)
+		if parents.length > 0
+			parents.each {|p| p.children.push self}
+			@genome = []
+			sorted_parents = parents.sort_by {|p| p.genome.split(:grid) }
+
+			mutate
 		else
 			@genome = Array.new(5) { MOB_GENES.random }
 		end
 		@rune_power = {:black => 0, :blue => 0, :red => 1, :green => 0}
-		@gm = GridManager.new(30, 10, RuneSquare)
+		@gm = [GridManager.new(20, 10, RuneSquare)]
 		@abilities = [:attack]
 		@current_ability_id = 0
 		run_genes
@@ -379,51 +411,56 @@ class Mob < Entity
 	end
 
 	def mutate(parent_genome)
-		@genome = parent_genome.dup
+		genome = parent_genome.dup
 		case rand(5)
 		when 0
-			@genome[rand(@genome.length)] = MOB_GENES.random
+			genome[rand(genome.length)] = MOB_GENES.random
 		when 1
-			@genome.insert(rand(@genome.length), MOB_GENES.random)
+			genome.insert(rand(genome.length), MOB_GENES.random)
 		when 2
-			@genome.delete_at(rand(genome.length))
+			genome.delete_at(rand(genome.length))
 		end
+		genome
 	end
 
 	def run_genes
-		cursor = Point.new(@gm.width/2, @gm.height/2)
+		current_gm = @gm.first
+		cursor = current_gm.at(current_gm.width/2, current_gm.height/2)
 		@genome.each do |gene|
 			case gene
 			when :up
 				up = Point.new(1, 0) + cursor
-				if @gm.in_bounds(up)
+				if current_gm.in_bounds(up)
 					cursor = up
 				end
 			when :down
 				down = Point.new(-1, 0) + cursor
-				if @gm.in_bounds(down)
+				if current_gm.in_bounds(down)
 					cursor = down
 				end
 			when :left
 				left = Point.new(0, -1) + cursor
-				if @gm.in_bounds(left)
+				if current_gm.in_bounds(left)
 					cursor = left
 				end
 			when :right
 				right = Point.new(0, 1) + cursor
-				if @gm.in_bounds(right)
+				if current_gm.in_bounds(right)
 					cursor = right
 				end
 			when :red
-				@gm.at(cursor).rune = :red
+				current_gm.at(cursor).rune = :red
 			when :black
-				@gm.at(cursor).rune = :black
+				current_gm.at(cursor).rune = :black
 			when :blue
-				@gm.at(cursor).rune = :blue
+				current_gm.at(cursor).rune = :blue
 			when :green
-				@gm.at(cursor).rune = :green
+				current_gm.at(cursor).rune = :green
+			when :grid
+				current_gm = GameManager.new(20, 10, RuneSquare)
+				@gm.push current_gm
+				cursor = current_gm.at(current_gm.width/2, current_gm.height/2)
 			end
-
 		end
 	end
 
