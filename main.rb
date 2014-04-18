@@ -115,6 +115,7 @@ class GameManager < GridManager
 			mobs.sort_by{|e| e.children.length}.reverse[0..0].each do |mob|
 				mob.display_stats
 			end
+			sleep 0.01
 		end
 	end
 
@@ -594,7 +595,7 @@ def test_mm(n=100)
 		gm.mobs.sort_by{|e| e.resources}.reverse[0..4].each do |mob|
 			mob.display_stats
 		end
-		sleep 0.1
+		sleep 1
 	end
 	gm
 end
