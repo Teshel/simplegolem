@@ -1,4 +1,4 @@
-
+# foobar
 Config = {
 	:plant_spread_cost => 10,
 	:plant_age_max => 300,
